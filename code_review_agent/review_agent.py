@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python32
 import asyncio
 import json
 import os
