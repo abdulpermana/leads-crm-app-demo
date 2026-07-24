@@ -1,61 +1,70 @@
 # Security Review: `feature/lead-search`
 
 ## Executive Summary
-A security review was conducted on the diff between `main` and `feature/lead-search` (`server.ts`).
-The diff introduces a new search API endpoint (`GET /api/leads/search`). Three security issues were identified, ranging from **Critical** to **Low** severity.
+A security review was performed on the `feature/lead-search` branch against `main`, applying the `security-and-hardening` and `code-review-and-quality` agent skills.
+
+The review evaluated the newly introduced API endpoint `GET /api/leads/search` in [server.ts](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts) across OWASP Top 10 categories, threat vectors (STRIDE), and safe coding practices.
+
+Three primary security issues were identified:
+1. **SQL Injection** (Critical)
+2. **Internal Error Details Exposure / Information Disclosure** (Medium)
+3. **Sensitive Data & PII Logging** (Low)
 
 ---
 
-## Findings
+## Threat Model & Findings
 
 ### 1. SQL Injection Vulnerability
 * **Severity**: Critical
 * **OWASP Category**: A03:2021 – Injection
-* **File**: [`server.ts`](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts#L238)
+* **File**: [server.ts](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts)
+* **Threat Vector**: Tampering / Elevation of Privilege
 * **Description**:
-  The search endpoint constructs SQL queries by directly concatenating user-supplied input (`req.query.q`) into the SQL string:
+  The search route directly concatenates user input (`req.query.q`) into a SQL string:
   ```typescript
   const sql = `SELECT * FROM leads WHERE name LIKE '%${query}%' OR company LIKE '%${query}%' OR email LIKE '%${query}%'`;
   const results = db.prepare(sql).all();
   ```
-  Unsanitized user input concatenated into a SQL statement allows attackers to inject arbitrary SQL fragments, potentially bypassing search boundaries, executing unauthorized database operations, or extracting data.
+  Unsanitized string interpolation in database queries allows an attacker to manipulate SQL control flow, potentially accessing unauthorized data or executing arbitrary SQL commands.
 
 ---
 
-### 2. Internal Error Details Exposure (Information Disclosure)
-* **Severity**: Low / Medium
+### 2. Internal Error Message Exposure (Information Disclosure)
+* **Severity**: Medium
 * **OWASP Category**: A05:2021 – Security Misconfiguration
-* **File**: [`server.ts`](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts#L248-L251)
+* **File**: [server.ts](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts)
+* **Threat Vector**: Information Disclosure
 * **Description**:
-  In the `catch` block, internal error message details are directly returned to the client in the HTTP response:
+  The route returns raw exception messages (`error.message`) directly in the HTTP 500 response payload:
   ```typescript
   res.status(500).json({
     error: "Search failed",
     details: error.message,
   });
   ```
-  Exposing raw error details (`error.message`) to external callers leaks database structural details, column names, or driver implementation details that can assist an attacker in reconnaissance.
+  Exposing internal database error messages leaks database architecture details, table schemas, or query structure to untrusted clients, aiding attacker reconnaissance.
 
 ---
 
-### 3. Sensitive Data & Raw Input Logging
+### 3. Raw User Query & PII Logging
 * **Severity**: Low
 * **OWASP Category**: A09:2021 – Security Logging and Monitoring Failures
-* **File**: [`server.ts`](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts#L240-L244)
+* **File**: [server.ts](file:///home/abdulpermana_dev/leads-crm-app-demo/server.ts)
+* **Threat Vector**: Information Disclosure
 * **Description**:
-  Raw user inputs and constructed SQL strings are logged directly to standard output:
+  Raw search query parameters and formatted SQL statements containing user queries are written to standard log output:
   ```typescript
   console.log(`[search] Executing query: ${sql}`);
   console.log(`[search] Found ${results.length} results for query: ${query}`);
   ```
-  Logging raw user query strings (which may include names, company details, or email addresses) can expose Personally Identifiable Information (PII) in application logs or log management platforms.
+  Logging unredacted search queries can persist sensitive search queries or Personally Identifiable Information (PII) into plain-text system logs or log management platforms.
 
 ---
 
-## Plan to Fix
+## Remediation Plan (Fix Strategy)
 
-### Step 1: Parameterize the SQL Query
-Use parameterized query placeholders (`?`) provided by `better-sqlite3` / SQLite driver rather than string template literals.
+### Step 1: Parameterize Database Queries
+Replace template string concatenation with parameterized SQL bindings (`?` placeholders) supported by `better-sqlite3`.
 
 ```typescript
 const searchPattern = `%${query}%`;
@@ -63,22 +72,23 @@ const sql = `SELECT * FROM leads WHERE name LIKE ? OR company LIKE ? OR email LI
 const results = db.prepare(sql).all(searchPattern, searchPattern, searchPattern);
 ```
 
-### Step 2: Sanitize API Error Responses
-Remove the `details` field from the production error response to prevent leaking internal database error messages. Log internal errors server-side securely instead of sending them to the client.
+### Step 2: Sanitize HTTP Error Responses
+Sanitize response payloads on server errors by omitting internal error messages (`details`). Log errors server-side via `console.error` for internal diagnostics.
 
 ```typescript
+console.error('[search] Error executing search:', error);
 res.status(500).json({
-  error: "Search failed",
+  error: "Search failed"
 });
 ```
 
-### Step 3: Clean Up / Redact Verbose Console Logging
-Remove or sanitize `console.log` statements that output raw SQL strings or user search terms.
+### Step 3: Redact Raw Input Logging
+Remove or redact `console.log` statements that output raw SQL strings or user search terms.
 
 ---
 
 ## Verification Plan
-Once the fixes are applied:
-1. Verify search functionality works as expected with standard text inputs (e.g., matching name, company, email).
-2. Test input containing SQL special characters (e.g. `'`, `"`, `--`, `OR 1=1`) to confirm parameterized binding prevents injection.
-3. Confirm HTTP 500 error responses do not leak raw exception messages.
+
+1. **Functional Test**: Perform valid search requests to ensure matching leads (by name, company, or email) are returned accurately.
+2. **SQL Injection Mitigation Test**: Pass inputs containing SQL control characters (e.g. `' OR '1'='1`, `'; DROP TABLE leads; --`) to verify parameterized binding prevents SQL payload execution.
+3. **Error Handling Test**: Trigger a simulated query failure to verify HTTP 500 responses return generic error messages without leaking internal exception details.
