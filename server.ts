@@ -235,19 +235,16 @@ async function startServer() {
     }
 
     try {
-      const sql = `SELECT * FROM leads WHERE name LIKE '%${query}%' OR company LIKE '%${query}%' OR email LIKE '%${query}%'`;
+      const searchPattern = `%${query}%`;
+      const sql = `SELECT * FROM leads WHERE name LIKE ? OR company LIKE ? OR email LIKE ?`;
 
-      console.log(`[search] Executing query: ${sql}`);
+      const results = db.prepare(sql).all(searchPattern, searchPattern, searchPattern);
 
-      const results = db.prepare(sql).all();
-
-      console.log(`[search] Found ${results.length} results for query: ${query}`);
       res.json(results);
     } catch (error: any) {
-      console.log(`[search] Error executing search: ${error.message}`);
+      console.error(`[search] Error executing search:`, error);
       res.status(500).json({
         error: "Search failed",
-        details: error.message,
       });
     }
   });
